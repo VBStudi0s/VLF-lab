@@ -1,1 +1,1 @@
-# VLF МИК32 Lab
+# VLF Lab (MIK32)
