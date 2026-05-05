@@ -6,9 +6,9 @@ BUILD_DIR=build
 SERIAL_PORT?=/dev/ttyUSB0
 SERIAL_BOUDRATE?=115200
 
-.PHONY: clean flash monitor
+.PHONY: clean flash monitor build
 
-build_app: update_submodules $(BUILD_DIR)
+build: update_submodules $(BUILD_DIR)
 	cmake --build $(BUILD_DIR)
 
 update_submodules: $(MIK32_HAL_DIR)/README.md $(MIK32_SHARED_DIR)/README.md
