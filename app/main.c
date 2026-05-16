@@ -1,52 +1,98 @@
-#include "mik32_hal_adc.h"
 #include "mik32_hal_usart.h"
-#include "mik32_hal_scr1_timer.h"
+#include "mik32_hal_i2c.h"
+#include "mik32_hal_irq.h"
+#include "mik32_hal_dma.h"
+#include "mik32_hal_adc.h"
+#include "mik32_hal_timer32.h"
+#include "string.h"
+#include "stdlib.h"
 #include "xprintf.h"
 
-#define ADC_CHANNEL_TOTAL                6U
-#define ADC_CONVERSIONS_PER_CHANNEL      2U
-#define ADC_RAW_VALUE_MAX                4095U
-#define ADC_REF_VOLTAGE_MV               1200U /* mV */
-#define MILLIVOLTS_PER_VOLT              1000U
-#define LOOP_DELAY_MS                    800U
+#define BLOCK_SIZE          1024u
+#define SAMPLE_RATE_HZ      10000u
+#define SYSCLK_HZ           32000000u
+#define TIMER_TOP           ((SYSCLK_HZ / SAMPLE_RATE_HZ) - 1u)
 
+#define USART_BAUD          921600u
+#define USART_TIMEOUT       0
+
+#define PACKET_SYNC0        0xA5
+#define PACKET_SYNC1        0x5A
+
+static volatile bool adc_busy = false;
+static volatile uint32_t block_seq = 0;
+static volatile uint32_t dropped_triggers = 0;
+static volatile uint32_t tx_errors = 0;
 
 static void SystemClock_Config();
 static void USART_Init();
-
-static USART_HandleTypeDef husart0;
-ADC_HandleTypeDef hadc;
-
+static void DMA_Init();
 static void ADC_Init(void);
+static void Timer32_Init(void);
+
+static void configure_interrupts();
+static void configure_mem_to_uart_dma(DMA_InitTypeDef*, DMA_ChannelHandleTypeDef*);
+
+ADC_HandleTypeDef    hadc;
+TIMER32_HandleTypeDef htimer32;
+USART_HandleTypeDef husart0;
+DMA_InitTypeDef hdma;
+
+DMA_ChannelHandleTypeDef hdma_ch_mem_to_uart;
+
 
 int main()
 {
-    uint16_t adc_value = 0U;
-    uint32_t integer_part = 0U;
-    uint32_t fractional_part = 0U;
     SystemClock_Config();
-
     USART_Init();
+    DMA_Init();
     ADC_Init();
+    Timer32_Init();
+
+    configure_interrupts();
+    configure_mem_to_uart_dma(&hdma, &hdma_ch_mem_to_uart);
+
+    HAL_Timer32_Value_Clear(&htimer32);
+    HAL_Timer32_Start(&htimer32);
+    HAL_USART_Print(&husart0, "start\n\r", 100);
 
     while (1)
     {
-        HAL_USART_Print(&husart0, "YADRO RISCV\r\n", USART_TIMEOUT_DEFAULT);
-        for (uint32_t channel = 0U; channel < ADC_CHANNEL_TOTAL; channel++) {
-            for (uint32_t conversion = 0U; conversion < ADC_CONVERSIONS_PER_CHANNEL; conversion++) {
-                HAL_ADC_SINGLE_AND_SET_CH(hadc.Instance, channel);
-                adc_value = HAL_ADC_WaitAndGetValue(&hadc);
-                if (0U == conversion) {
-                    continue;
-                }
-                integer_part = adc_value * ADC_REF_VOLTAGE_MV / ADC_RAW_VALUE_MAX / MILLIVOLTS_PER_VOLT;
-                fractional_part = adc_value * ADC_REF_VOLTAGE_MV / ADC_RAW_VALUE_MAX % MILLIVOLTS_PER_VOLT;
-                xprintf("ADC[%d]: %04d/%d (%d,%03d V)\r\n", channel, adc_value, ADC_RAW_VALUE_MAX, integer_part, fractional_part);
-            }
+        if(true) {
+            //HAL_DMA_Start(&hdma_ch_mem_to_uart, top.byteArray, (void*)&(husart0.Instance->TXDATA), top.length - 1);
         }
-        HAL_DelayMs(LOOP_DELAY_MS);
     }
 }
+
+void trap_handler(void)
+{
+    if (EPIC_CHECK_TIMER32_0())
+    {
+        //HAL_TIMER32_INTERRUPTFLAGS_CLEAR(&htimer32);
+        if (!adc_busy)
+        {
+            adc_busy = true;
+            HAL_ADC_Single(&hadc);
+        }
+        else
+        {
+            dropped_triggers++;
+        }
+        TIMER32_0->INT_CLEAR = TIMER32_INT_OVERFLOW_M;
+        EPIC->CLEAR = EPIC_LINE_TIMER32_0_S;
+    }
+
+    if (EPIC_CHECK_ADC())
+    {
+        uint16_t sample = HAL_ADC_GetValue(&hadc);
+        adc_busy = false;
+        //HAL_USART_Print(&husart0, "ADC int\n\r", 100);
+        xprintf("ADC: %04d/%d\r\n", sample, 4096);
+        HAL_EPIC_Clear(HAL_EPIC_ADC_MASK);
+
+    }
+}
+
 
 void SystemClock_Config(void)
 {
@@ -66,6 +112,23 @@ void SystemClock_Config(void)
     HAL_PCC_Config(&PCC_OscInit);
 }
 
+static void Timer32_Init(void)
+{
+        // Включение тактирования TIMER32_0
+    PM->CLK_APB_M_SET = PM_CLOCK_APB_M_TIMER32_0_M;
+    TIMER32_0->ENABLE = 0;
+    TIMER32_0->TOP = TIMER_TOP;
+    TIMER32_0->PRESCALER = 0;
+    TIMER32_0->CONTROL =
+        TIMER32_CONTROL_MODE_UP_M | TIMER32_CONTROL_CLOCK_PRESCALER_M;
+    TIMER32_0->INT_MASK = 0;
+    TIMER32_0->INT_CLEAR = 0xFFFFFFFF;
+    TIMER32_0->ENABLE = 1;
+    // Включение прерывания по переполнению
+    TIMER32_0->INT_MASK = TIMER32_INT_OVERFLOW_M;
+
+}
+
 static void ADC_Init(void) {
     hadc.Instance = ANALOG_REG;
     hadc.Init.EXTRef = ADC_EXTREF_OFF;
@@ -74,17 +137,12 @@ static void ADC_Init(void) {
     HAL_ADC_Init(&hadc);
 }
 
-void HAL_ADC_MspInit(ADC_HandleTypeDef *hadc) {
-    GPIO_InitTypeDef GPIO_InitStruct = { 0 };
-    __HAL_PCC_ANALOG_REGS_CLK_ENABLE();
 
-    GPIO_InitStruct.Mode = HAL_GPIO_MODE_ANALOG;
-    GPIO_InitStruct.Pull = HAL_GPIO_PULL_NONE;
-    GPIO_InitStruct.Pin = GPIO_PIN_5 | GPIO_PIN_7;
-    HAL_GPIO_Init(GPIO_1, &GPIO_InitStruct);
-
-    GPIO_InitStruct.Pin = GPIO_PIN_2 | GPIO_PIN_4 | GPIO_PIN_7 | GPIO_PIN_9;
-    HAL_GPIO_Init(GPIO_0, &GPIO_InitStruct);
+void DMA_Init(void)
+{
+    hdma.Instance = DMA_CONFIG;
+    hdma.CurrentValue = DMA_CURRENT_VALUE_ENABLE;
+    HAL_DMA_Init(&hdma);
 }
 
 void USART_Init()
@@ -107,8 +165,6 @@ void USART_Init()
     husart0.last_byte_clock = Disable;
     husart0.overwrite = Disable;
     husart0.rts_mode = AlwaysEnable_mode;
-    husart0.dma_tx_request = Disable;
-    husart0.dma_rx_request = Disable;
     husart0.channel_mode = Duplex_Mode;
     husart0.tx_break_mode = Disable;
     husart0.Interrupt.ctsie = Disable;
@@ -126,6 +182,43 @@ void USART_Init()
     husart0.Modem.dsr = Disable; //in
     husart0.Modem.ri = Disable;  //in
     husart0.Modem.ddis = Disable;//out
-    husart0.baudrate = 115200;
+    husart0.baudrate = USART_BAUD;
+
+    husart0.dma_tx_request = Enable;
+    husart0.dma_rx_request = Disable;
+
     HAL_USART_Init(&husart0);
+}
+
+void configure_interrupts() {
+    __HAL_PCC_EPIC_CLK_ENABLE();
+    HAL_EPIC_MaskLevelSet(HAL_EPIC_UART_0_MASK | HAL_EPIC_TIMER32_1_MASK);
+    HAL_USART_RXNE_EnableInterrupt(&husart0);
+    //HAL_USART_TXC_EnableInterrupt(&husart0);
+    HAL_EPIC_MaskEdgeSet(HAL_EPIC_ADC_MASK);
+    TIMER32_0->INT_MASK = TIMER32_INT_OVERFLOW_M;
+
+    HAL_IRQ_EnableInterrupts();
+}
+
+void configure_mem_to_uart_dma(DMA_InitTypeDef* hdma, DMA_ChannelHandleTypeDef* ch) {
+    ch->dma = hdma;
+
+    /* Настройки канала */
+    ch->ChannelInit.Channel = DMA_CHANNEL_0;
+    ch->ChannelInit.Priority = DMA_CHANNEL_PRIORITY_VERY_HIGH;
+
+    ch->ChannelInit.ReadMode = DMA_CHANNEL_MODE_MEMORY;
+    ch->ChannelInit.ReadInc = DMA_CHANNEL_INC_ENABLE;
+    ch->ChannelInit.ReadSize = DMA_CHANNEL_SIZE_BYTE; /* data_len должно быть кратно read_size */
+    ch->ChannelInit.ReadBurstSize = 0;                /* read_burst_size должно быть кратно read_size */
+    ch->ChannelInit.ReadRequest = DMA_CHANNEL_USART_0_REQUEST;
+    ch->ChannelInit.ReadAck = DMA_CHANNEL_ACK_DISABLE;
+
+    ch->ChannelInit.WriteMode = DMA_CHANNEL_MODE_PERIPHERY;
+    ch->ChannelInit.WriteInc = DMA_CHANNEL_INC_DISABLE;
+    ch->ChannelInit.WriteSize = DMA_CHANNEL_SIZE_BYTE; /* data_len должно быть кратно write_size */
+    ch->ChannelInit.WriteBurstSize = 0;                /* write_burst_size должно быть кратно read_size */
+    ch->ChannelInit.WriteRequest = DMA_CHANNEL_USART_0_REQUEST;
+    ch->ChannelInit.WriteAck = DMA_CHANNEL_ACK_ENABLE;
 }
