@@ -4,6 +4,7 @@ set(APP_NAME ${CMAKE_PROJECT_NAME})
 add_executable(${APP_NAME}
     main.c
     startup.c
+    riscv-irq.c
 )
 
 target_link_libraries(${APP_NAME}
