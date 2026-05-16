@@ -19,7 +19,7 @@
 #include "xprintf.h"
 
 #define BLOCK_SIZE          1024u
-#define SAMPLE_RATE_HZ      1000u
+#define SAMPLE_RATE_HZ      10000u
 #define SYSCLK_HZ           32000000u
 #define TIMER_TOP           ((SYSCLK_HZ / SAMPLE_RATE_HZ) - 1u)
 
@@ -161,21 +161,18 @@ void process_and_send_block(uint8_t idx, block_packet_t* pkt)
     pkt->block_id = block_seq++;
     pkt->dropped_triggers = dropped_triggers;
     pkt->sample_count = BLOCK_SIZE;
-    sum = 0;
     for (uint16_t i = 0; i < BLOCK_SIZE; ++i)
     {
         int16_t centered = (int16_t)adc_buf[idx][i] - (int16_t)mean;
-        sum += centered;
         //pkt->samples[i] = centered;
 
         if (centered < min_v) min_v = centered;
         if (centered > max_v) max_v = centered;
     }
-    uint16_t mean_centered = (uint16_t)((sum + (int32_t)(BLOCK_SIZE / 2u)) / (int32_t)BLOCK_SIZE);
     pkt->mean_raw = mean;
 
-    pkt->min_centered = min_v;
-    pkt->max_centered = max_v;
+    pkt->min_centered = min_v + mean;
+    pkt->max_centered = max_v + mean;
 
     pkt->end_sync[0] = PACKET_END_SYNC0;
     pkt->end_sync[1] = PACKET_END_SYNC1;
