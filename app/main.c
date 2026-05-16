@@ -6,11 +6,16 @@
 #include "riscv-irq.h"
 #include "scr1_timer.h"
 #include "timer32.h"
-#include "wakeup.h"
+
+#include "mik32_hal.h"
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
 
 #include "mik32_hal_irq.h"
 #include "mik32_hal_adc.h"
 #include "mik32_hal_usart.h"
+#include "xprintf.h"
 
 #define BLOCK_SIZE          1024u
 #define SAMPLE_RATE_HZ      10000u
@@ -20,7 +25,12 @@
 #define USART_BAUD          921600u
 #define USART_TIMEOUT       0
 
+static uint16_t adc_buf[2][BLOCK_SIZE];
+static volatile bool buf_ready[2] = {false, false};
+static volatile uint8_t fill_buf = 0;
+static volatile uint16_t fill_pos = 0;
 static volatile bool adc_busy = false;
+
 static volatile uint32_t block_seq = 0;
 static volatile uint32_t dropped_triggers = 0;
 static volatile uint32_t tx_errors = 0;
@@ -32,12 +42,12 @@ void TMR_Init();
 static void ADC_Init();
 void EPIC_trap_handler();
 void exception_trap_handler();
+void process_and_send_block(uint8_t idx);
 
 static void configure_interrupts();
 
 void exception_trap_handler() {
   while (1) {
-
   }
   return;
 }
@@ -49,7 +59,13 @@ void EPIC_trap_handler() {
     if (EPIC_CHECK_TIMER32_0())
     {
         uint16_t sample = HAL_ADC_GetValue(&hadc);
-        adc_busy = false;
+        adc_buf[fill_buf][fill_pos++] = sample;
+        if (fill_pos >= BLOCK_SIZE)
+        {
+            buf_ready[fill_buf] = true;
+            fill_buf ^= 1u;
+            fill_pos = 0;
+        }
         TIMER32_0->INT_CLEAR = TIMER32_INT_OVERFLOW_M;
         EPIC->CLEAR = EPIC_LINE_TIMER32_0_S;
     }
@@ -76,8 +92,38 @@ int main()
     riscv_irq_global_enable();
 
     while (1) {
-        HAL_USART_Print(&husart0, "main\n\r", 10);
+        if (buf_ready[0])
+        {
+            buf_ready[0] = false;
+            process_and_send_block(0);
+        }
+        else if (buf_ready[1])
+        {
+            buf_ready[1] = false;
+            process_and_send_block(1);
+        }
     }
+}
+
+void process_and_send_block(uint8_t idx)
+{
+    int32_t sum = 0;
+    int16_t min_v = INT16_MAX;
+    int16_t max_v = INT16_MIN;
+
+    for (uint16_t i = 0; i < BLOCK_SIZE; ++i)
+        sum += adc_buf[idx][i];
+
+    uint16_t mean = (uint16_t)(sum / (int32_t)BLOCK_SIZE);
+
+    for (uint16_t i = 0; i < BLOCK_SIZE; ++i)
+    {
+        int16_t centered = (int16_t)adc_buf[idx][i];
+
+        if (centered < min_v) min_v = centered;
+        if (centered > max_v) max_v = centered;
+    }
+    xprintf("Mean: %d ; Min: %d ; Max: %d\n\r", mean, min_v, max_v);
 }
 
 void TMR_Init()
