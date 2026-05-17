@@ -201,6 +201,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.spectrogram_widget.setLabel('left', 'Block ID (time)')
         self.spectrogram_image = pg.ImageItem()
         self.spectrogram_widget.addItem(self.spectrogram_image)
+        self.spectrogram_widget.setAspectLocked(False)
 
         # Цветовая шкала (исправленный вызов)
         self.color_bar = pg.ColorBarItem(values=(0, 1), colorMap='inferno')
@@ -210,13 +211,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # альтернативно: можно добавить цветовую шкалу как отдельный элемент, но выше работает
 
         right_layout.addWidget(self.spectrogram_widget)
-
-        # График dropped triggers
-        self.drop_plot = pg.PlotWidget(title="Dropped triggers vs Block ID")
-        self.drop_plot.setLabel('bottom', 'Block ID')
-        self.drop_plot.setLabel('left', 'Dropped count')
-        self.dropped_curve = self.drop_plot.plot(pen='r', symbol='o', symbolSize=4)
-        right_layout.addWidget(self.drop_plot)
 
         main_layout.addWidget(left_widget, 1)
         main_layout.addWidget(right_widget, 4)
@@ -278,7 +272,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # --- график амплитуды ---
         samples = packet.samples
         if len(samples) > 0:
-            self.amplitude_curve.setData(samples[:min(500, len(samples))])
+            self.amplitude_curve.setData(samples[:len(samples)])
 
         # --- спектрограмма ---
         freq, power_db = self.compute_spectrum(samples, SAMPLE_RATE_HZ)
@@ -288,20 +282,18 @@ class MainWindow(QtWidgets.QMainWindow):
 
         img = np.array(self.spectrogram_data, dtype=np.float32).T
         self.spectrogram_image.setImage(img, autoLevels=False)
-        if img.size > 0:
-            self.spectrogram_image.setLevels([np.min(img), np.max(img)])
+        # if img.size > 0:
+        #     self.spectrogram_image.setLevels([np.min(img), np.max(img)])
 
-        # Установка осей
+        x0, x1 = freq[0], freq[-1]
+        y0 = 0
+        y1 = len(self.spectrogram_data) # Высота картинки растет вместе с данными
+        self.spectrogram_image.setRect(QtCore.QRectF(x0, y0, x1 - x0, y1))
+
         if self.freq_axis is None:
             self.freq_axis = freq
-        if len(self.freq_axis) > 0:
-            x0 = self.freq_axis[0]
-            x1 = self.freq_axis[-1]
-            y0 = 0
-            y1 = len(self.spectrogram_data)
-            self.spectrogram_image.setRect(QtCore.QRectF(x0, y0, x1 - x0, y1 - y0))
             self.spectrogram_widget.setXRange(x0, x1)
-            self.spectrogram_widget.setYRange(y0, y1)
+            self.spectrogram_widget.setYRange(0, MAX_HISTORY_BLOCKS)
 
         # --- статистика ---
         self.block_ids.append(packet.block_id)
@@ -316,8 +308,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.min_values.pop(0)
             self.max_values.pop(0)
             self.dropped_history.pop(0)
-
-        self.dropped_curve.setData(self.block_ids, self.dropped_history)
 
     def closeEvent(self, event):
         self.reader.stop()
