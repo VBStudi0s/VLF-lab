@@ -73,9 +73,11 @@ typedef struct __attribute__((packed))
     int16_t  min_centered;
     int16_t  max_centered;
     uint16_t sample_count;
-    //int16_t  samples[BLOCK_SIZE];
+    int16_t  samples[BLOCK_SIZE];
     uint8_t  end_sync[2];
 } block_packet_t;
+
+static block_packet_t pkt1, pkt2;
 
 void process_and_send_block(uint8_t idx, block_packet_t* pkt);
 static void transfer_data_from_dst_mem(DMA_ChannelHandleTypeDef*, USART_HandleTypeDef*, block_packet_t*);
@@ -123,8 +125,6 @@ int main()
     //HAL_EPIC_MaskEdgeSet(HAL_EPIC_ADC_MASK);
     riscv_irq_global_enable();
 
-    block_packet_t pkt1, pkt2;
-
     while (1) {
         if (buf_ready[0])
         {
@@ -164,7 +164,7 @@ void process_and_send_block(uint8_t idx, block_packet_t* pkt)
     for (uint16_t i = 0; i < BLOCK_SIZE; ++i)
     {
         int16_t centered = (int16_t)adc_buf[idx][i] - (int16_t)mean;
-        //pkt->samples[i] = centered;
+        pkt->samples[i] = centered;
 
         if (centered < min_v) min_v = centered;
         if (centered > max_v) max_v = centered;
@@ -251,7 +251,7 @@ void USART_Init()
 {
     husart0.Instance = UART_0;
     husart0.transmitting = Enable;
-    husart0.receiving = Enable;
+    husart0.receiving = Disable;
     husart0.frame = Frame_8bit;
     husart0.parity_bit = Disable;
     husart0.parity_bit_inversion = Disable;
@@ -267,7 +267,7 @@ void USART_Init()
     husart0.last_byte_clock = Disable;
     husart0.overwrite = Disable;
     husart0.rts_mode = AlwaysEnable_mode;
-    husart0.channel_mode = Duplex_Mode;
+    husart0.channel_mode = Semiduplex_Mode;
     husart0.tx_break_mode = Disable;
     husart0.Interrupt.ctsie = Disable;
     husart0.Interrupt.eie = Disable;
@@ -284,7 +284,7 @@ void USART_Init()
     husart0.Modem.dsr = Disable; //in
     husart0.Modem.ri = Disable;  //in
     husart0.Modem.ddis = Disable;//out
-    husart0.baudrate = 921600;
+    husart0.baudrate = 230400;
 
     husart0.dma_tx_request = Enable;
     husart0.dma_rx_request = Disable;
@@ -303,7 +303,7 @@ void configure_mem_to_uart_dma(DMA_InitTypeDef* hdma, DMA_ChannelHandleTypeDef* 
     ch->ChannelInit.ReadInc = DMA_CHANNEL_INC_ENABLE;
     ch->ChannelInit.ReadSize = DMA_CHANNEL_SIZE_BYTE; /* data_len должно быть кратно read_size */
     ch->ChannelInit.ReadBurstSize = 0;                /* read_burst_size должно быть кратно read_size */
-    ch->ChannelInit.ReadRequest = DMA_CHANNEL_USART_0_REQUEST;
+    //ch->ChannelInit.ReadRequest = DMA_CHANNEL_USART_0_REQUEST;
     ch->ChannelInit.ReadAck = DMA_CHANNEL_ACK_DISABLE;
 
     ch->ChannelInit.WriteMode = DMA_CHANNEL_MODE_PERIPHERY;
@@ -311,12 +311,12 @@ void configure_mem_to_uart_dma(DMA_InitTypeDef* hdma, DMA_ChannelHandleTypeDef* 
     ch->ChannelInit.WriteSize = DMA_CHANNEL_SIZE_BYTE; /* data_len должно быть кратно write_size */
     ch->ChannelInit.WriteBurstSize = 0;                /* write_burst_size должно быть кратно read_size */
     ch->ChannelInit.WriteRequest = DMA_CHANNEL_USART_0_REQUEST;
-    ch->ChannelInit.WriteAck = DMA_CHANNEL_ACK_DISABLE;
+    ch->ChannelInit.WriteAck = DMA_CHANNEL_ACK_ENABLE;
 }
 
 void transfer_data_from_dst_mem(DMA_ChannelHandleTypeDef* hdma_ch, USART_HandleTypeDef* huart, block_packet_t* dst_mem) {
     while (!HAL_DMA_GetChannelReadyStatus(hdma_ch)) {
     // ждём, пока канал освободится
-}
-   HAL_DMA_Start(hdma_ch, dst_mem, (void*)&huart->Instance->TXDATA, sizeof(block_packet_t) - 1);
+    }
+   HAL_DMA_Start(hdma_ch, dst_mem, (void*)&(huart->Instance->TXDATA), sizeof(block_packet_t) - 1);
 }

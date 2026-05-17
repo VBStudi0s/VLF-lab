@@ -3,8 +3,8 @@ MIK32_SHARED_DIR=hardware/mik32v2-shared
 
 BUILD_DIR=build
 
-SERIAL_PORT?=/dev/ttyUSB2
-SERIAL_BOUDRATE?=921600
+SERIAL_PORT?=/dev/ttyUSB1
+SERIAL_BOUDRATE?=230400
 
 .PHONY: clean flash monitor
 
@@ -34,3 +34,6 @@ flash:
 
 monitor:
 	picocom $(SERIAL_PORT) -b $(SERIAL_BOUDRATE) --omap crcrlf --echo
+
+byte_monitor:
+	picocom $(SERIAL_PORT) -b $(SERIAL_BOUDRATE) --imap spchex,tabhex,crhex,lfhex,nrmhex,8bithex
